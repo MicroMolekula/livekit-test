@@ -1,7 +1,7 @@
 package main
 
 import (
-	protocol "backend/pkg/salute_speech"
+	"backend/cloudapi/output/github.com/yandex-cloud/go-genproto/yandex/cloud/ai/stt/v3"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -15,7 +15,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/grpclog"
-	"google.golang.org/protobuf/types/known/durationpb"
 	"os"
 	"os/signal"
 	"strings"
@@ -23,6 +22,20 @@ import (
 )
 
 var chunkCh = make(chan []byte, 2)
+
+type tokenAuth struct {
+	Token string
+}
+
+func (t *tokenAuth) GetRequestMetadata(ctx context.Context, uri ...string) (map[string]string, error) {
+	return map[string]string{
+		"authorization": t.Token,
+	}, nil
+}
+
+func (t *tokenAuth) RequireTransportSecurity() bool {
+	return false
+}
 
 func main() {
 	apiKey := "devkey"
@@ -35,7 +48,7 @@ func main() {
 			OnTrackSubscribed: onTrackSubscribed,
 		},
 	}
-
+	go getStream()
 	room, err := lksdk.ConnectToRoom("ws://localhost:7880", lksdk.ConnectInfo{
 		APIKey:              apiKey,
 		APISecret:           apiSecret,
@@ -45,7 +58,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	go Recognition()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT)
@@ -65,11 +77,12 @@ func onTrackSubscribed(track *webrtc.TrackRemote, publication *lksdk.RemoteTrack
 	if err != nil {
 		panic(err)
 	}
-	chunkPkt, err := packet.Marshal()
+	bytePacket, err := packet.Marshal()
 	if err != nil {
 		panic(err)
 	}
-	chunkCh <- chunkPkt
+	fmt.Println(bytePacket)
+	chunkCh <- bytePacket
 }
 
 const (
@@ -117,76 +130,73 @@ func (t *TrackWriter) start() {
 	}
 }
 
-type tokenAuth struct {
-	Token string
-}
+func getStream() {
 
-func (t *tokenAuth) GetRequestMetadata(ctx context.Context, uri ...string) (map[string]string, error) {
-	return map[string]string{
-		"authorization": t.Token,
-	}, nil
-}
+	recognizeOptions := &stt.StreamingOptions{
+		RecognitionModel: &stt.RecognitionModelOptions{
+			AudioFormat: &stt.AudioFormatOptions{
+				AudioFormat: &stt.AudioFormatOptions_ContainerAudio{
+					ContainerAudio: &stt.ContainerAudio{
+						ContainerAudioType: stt.ContainerAudio_OGG_OPUS,
+					},
+				},
+			},
+			TextNormalization: &stt.TextNormalizationOptions{
+				TextNormalization: stt.TextNormalizationOptions_TEXT_NORMALIZATION_ENABLED,
+				ProfanityFilter:   true,
+				LiteratureText:    false,
+			},
+			LanguageRestriction: &stt.LanguageRestrictionOptions{
+				RestrictionType: stt.LanguageRestrictionOptions_WHITELIST,
+				LanguageCode:    []string{"ru-RU"},
+			},
+			AudioProcessingType: stt.RecognitionModelOptions_REAL_TIME,
+		},
+	}
 
-func (t *tokenAuth) RequireTransportSecurity() bool {
-	return false
-}
-
-func Recognition() {
 	grpclog.SetLoggerV2(grpclog.NewLoggerV2(os.Stdout, os.Stderr, os.Stderr))
 	grpcConn, err := grpc.NewClient(
-		"smartspeech.sber.ru",
+		"stt.api.cloud.yandex.net",
 		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})),
-		grpc.WithPerRPCCredentials(&tokenAuth{"Bearer ?"}),
+		grpc.WithPerRPCCredentials(&tokenAuth{"Api-Key AQVN3YdhnRO9_90yFRj8f4Mr_WTXcXhjWaSITTE5"}),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(16*1024*1024)),
 	)
 	if err != nil {
 		panic(err)
 	}
-
-	recognitionOptions := &protocol.RecognitionOptions{
-		AudioEncoding:    protocol.RecognitionOptions_OPUS,
-		Language:         "ru-RU",
-		Model:            "general",
-		HypothesesCount:  1,
-		NoSpeechTimeout:  &durationpb.Duration{Seconds: 7},
-		MaxSpeechTimeout: &durationpb.Duration{Seconds: 20},
-	}
-	client := protocol.NewSmartSpeechClient(grpcConn)
+	//defer grpcConn.Close()
+	client := stt.NewRecognizerClient(grpcConn)
 	ctx := context.Background()
-	stream, err := client.Recognize(ctx)
+	stream, err := client.RecognizeStreaming(ctx)
 	if err != nil {
 		panic(err)
 	}
-	go func(chunkCh chan []byte) {
-		for ch := range chunkCh {
-			errSend := stream.Send(
-				&protocol.RecognitionRequest{
-					Request: &protocol.RecognitionRequest_Options{
-						Options: recognitionOptions,
-					},
-				},
-			)
-			if errSend != nil {
-				panic(errSend)
-			}
-			errSend = stream.Send(&protocol.RecognitionRequest{
-				Request: &protocol.RecognitionRequest_AudioChunk{
-					AudioChunk: ch,
+	err = stream.Send(&stt.StreamingRequest{
+		Event: &stt.StreamingRequest_SessionOptions{
+			SessionOptions: recognizeOptions,
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	go func() {
+		for chunk := range chunkCh {
+			err = stream.Send(&stt.StreamingRequest{
+				Event: &stt.StreamingRequest_Chunk{
+					Chunk: &stt.AudioChunk{Data: chunk},
 				},
 			})
+			if err != nil {
+				panic(err)
+			}
 		}
-		stream.CloseSend()
-	}(chunkCh)
+	}()
+
 	go func() {
-		for {
-			resp, errRecv := stream.Recv()
-			if errRecv != nil {
-				panic(errRecv)
-			}
-			if !resp.Eou {
-				break
-			}
-			fmt.Println(resp)
+		res, err := stream.Recv()
+		if err != nil {
+			panic(err)
 		}
+		fmt.Println(res)
 	}()
 }
