@@ -2,26 +2,32 @@ package main
 
 import (
 	"backend/cloudapi/output/github.com/yandex-cloud/go-genproto/yandex/cloud/ai/stt/v3"
+	"bytes"
 	"context"
 	"crypto/tls"
-	"errors"
+	"encoding/binary"
 	"fmt"
+	hropus "github.com/hraban/opus"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/server-sdk-go/v2/pkg/samplebuilder"
-	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
-	"github.com/pion/webrtc/v4/pkg/media/oggwriter"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/grpclog"
+	"io"
+	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
+	"time"
 )
 
-var chunkCh = make(chan []byte, 2)
+const (
+	sampleRate = 48000 // Частота дискретизации для SpeechKit
+	channels   = 1     // Моно
+	frameSize  = 960   // Количество сэмплов на кадр (20ms при 48kHz)
+)
 
 type tokenAuth struct {
 	Token string
@@ -37,6 +43,8 @@ func (t *tokenAuth) RequireTransportSecurity() bool {
 	return false
 }
 
+var chunkCh = make(chan []byte, 2)
+
 func main() {
 	apiKey := "devkey"
 	apiSecret := "secret"
@@ -48,7 +56,7 @@ func main() {
 			OnTrackSubscribed: onTrackSubscribed,
 		},
 	}
-	go getStream()
+
 	room, err := lksdk.ConnectToRoom("ws://localhost:7880", lksdk.ConnectInfo{
 		APIKey:              apiKey,
 		APISecret:           apiSecret,
@@ -58,6 +66,8 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	go recognize()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT)
@@ -73,71 +83,63 @@ type TrackWriter struct {
 }
 
 func onTrackSubscribed(track *webrtc.TrackRemote, publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-	packet, _, err := track.ReadRTP()
-	if err != nil {
-		panic(err)
-	}
-	bytePacket, err := packet.Marshal()
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(bytePacket)
-	chunkCh <- bytePacket
-}
-
-const (
-	maxVideoLate = 1000 // nearly 2s for fhd video
-	maxAudioLate = 100  // 4s for audio
-)
-
-func NewTrackWriter(track *webrtc.TrackRemote, fileName string) (*TrackWriter, error) {
-	var (
-		sb     *samplebuilder.SampleBuilder
-		writer media.Writer
-		err    error
-	)
-	switch {
-	case strings.EqualFold(track.Codec().MimeType, "audio/opus"):
-		sb = samplebuilder.New(maxAudioLate, &codecs.OpusPacket{}, track.Codec().ClockRate)
-		writer, err = oggwriter.New(fileName+".ogg", 48000, track.Codec().Channels)
-	default:
-		return nil, errors.New("unsupported codec type")
-	}
-	if err != nil {
-		return nil, err
-	}
-	t := &TrackWriter{
-		sb:     sb,
-		writer: writer,
-		track:  track,
-	}
-	go t.start()
-	return t, nil
-}
-
-func (t *TrackWriter) start() {
-	defer t.writer.Close()
+	acamulatedData := make([]byte, 1)
 	for {
-		pkt, _, err := t.track.ReadRTP()
+		opusData := make([]byte, 960*2) // Буфер для Opus-фреймов
+		n, _, err := track.Read(opusData)
 		if err != nil {
-			break
+			log.Println("Ошибка чтения аудиоданных:", err)
+			return
 		}
-		t.sb.Push(pkt)
-
-		for _, p := range t.sb.PopPackets() {
-			t.writer.WriteRTP(p)
+		pcmBytes := opusToPCM(opusData[:n])
+		acamulatedData = append(acamulatedData, pcmBytes...)
+		if len(acamulatedData) >= 4096 {
+			fmt.Println(acamulatedData)
+			chunkCh <- acamulatedData
+			acamulatedData = make([]byte, 1)
 		}
 	}
 }
 
-func getStream() {
+func opusToPCM(in []byte) []byte {
+	decoder, err := hropus.NewDecoder(48000, 1)
+	if err != nil {
+		fmt.Println("Ошибка при создании декодера", err)
+	}
+	pcmBytes := make([]int16, 960*2)
+	n, err := decoder.Decode(in, pcmBytes)
+	if err != nil {
+		fmt.Println("Ошибка при декодировании", err)
+	}
+	return pcmToBytes(pcmBytes[:n])
+}
 
+func pcmToBytes(pcmData []int16) []byte {
+	// Создаем новый буфер для байтового массива
+	buf := new(bytes.Buffer)
+
+	// Преобразуем каждый int16 в 2 байта и записываем в буфер
+	for _, sample := range pcmData {
+		// Записываем каждый int16 как два байта в Little Endian
+		err := binary.Write(buf, binary.LittleEndian, sample)
+		if err != nil {
+			fmt.Println("Ошибка при записи в буфер:", err)
+		}
+	}
+
+	// Возвращаем байтовый массив
+	return buf.Bytes()
+}
+
+func recognize() {
 	recognizeOptions := &stt.StreamingOptions{
 		RecognitionModel: &stt.RecognitionModelOptions{
 			AudioFormat: &stt.AudioFormatOptions{
-				AudioFormat: &stt.AudioFormatOptions_ContainerAudio{
-					ContainerAudio: &stt.ContainerAudio{
-						ContainerAudioType: stt.ContainerAudio_OGG_OPUS,
+				AudioFormat: &stt.AudioFormatOptions_RawAudio{
+					RawAudio: &stt.RawAudio{
+						AudioEncoding:     stt.RawAudio_LINEAR16_PCM,
+						SampleRateHertz:   sampleRate,
+						AudioChannelCount: 1,
 					},
 				},
 			},
@@ -156,17 +158,19 @@ func getStream() {
 
 	grpclog.SetLoggerV2(grpclog.NewLoggerV2(os.Stdout, os.Stderr, os.Stderr))
 	grpcConn, err := grpc.NewClient(
-		"stt.api.cloud.yandex.net",
+		"stt.api.cloud.yandex.net:443",
 		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})),
 		grpc.WithPerRPCCredentials(&tokenAuth{"Api-Key AQVN3YdhnRO9_90yFRj8f4Mr_WTXcXhjWaSITTE5"}),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(16*1024*1024)),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(4*1024*1025)),
 	)
+	defer grpcConn.Close()
 	if err != nil {
 		panic(err)
 	}
 	//defer grpcConn.Close()
 	client := stt.NewRecognizerClient(grpcConn)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	stream, err := client.RecognizeStreaming(ctx)
 	if err != nil {
 		panic(err)
@@ -179,24 +183,32 @@ func getStream() {
 	if err != nil {
 		panic(err)
 	}
+
 	go func() {
-		for chunk := range chunkCh {
-			err = stream.Send(&stt.StreamingRequest{
+		for audioData := range chunkCh {
+			err := stream.Send(&stt.StreamingRequest{
 				Event: &stt.StreamingRequest_Chunk{
-					Chunk: &stt.AudioChunk{Data: chunk},
+					Chunk: &stt.AudioChunk{Data: audioData},
 				},
 			})
 			if err != nil {
-				panic(err)
+				fmt.Println("Ошибка отправки аудио в gRPC:", err)
+				break
 			}
 		}
+		stream.CloseSend()
 	}()
 
-	go func() {
-		res, err := stream.Recv()
-		if err != nil {
-			panic(err)
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			fmt.Println("Удален")
+			break
 		}
-		fmt.Println(res)
-	}()
+		if err != nil {
+			log.Fatalf("Ошибка получения ответа: %v", err)
+		}
+
+		fmt.Println("Результат распознавания:", resp.GetSpeakerAnalysis())
+	}
 }

@@ -21,6 +21,7 @@ require (
 	github.com/google/cel-go v0.21.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/hraban/opus v0.0.0-20230925203106-0188a62cb302 // indirect
 	github.com/jxskiss/base62 v1.1.0 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.7 // indirect
@@ -45,6 +46,7 @@ require (
 	github.com/pion/logging v0.2.2 // indirect
 	github.com/pion/mdns v0.0.4 // indirect
 	github.com/pion/mdns/v2 v2.0.7 // indirect
+	github.com/pion/opus v0.0.0-20240826153031-e8536fe9e4ca // indirect
 	github.com/pion/quic v0.1.1 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.14 // indirect
