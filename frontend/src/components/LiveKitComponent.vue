@@ -16,7 +16,7 @@ import {ref} from "vue";
 const room = new Room()
 
 const model = ref('1')
-const token1 = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MzM2ODQ3MjYsImlzcyI6ImRldmtleSIsIm5iZiI6MTczMzY4MTEyNiwic3ViIjoicGFydGljaXBhbnRJZGVudGl0eTEiLCJ2aWRlbyI6eyJyb29tIjoibXlyb29tIiwicm9vbUpvaW4iOnRydWV9fQ.5TvU9pdgfL_K6vtuwB1Cc_z2JgFLEBlPlLrblk1PeSw'
+const token1 = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MzM3ODE3MTcsImlzcyI6ImRldmtleSIsIm5iZiI6MTczMzc3ODExNywic3ViIjoicGFydGljaXBhbnRJZGVudGl0eTEiLCJ2aWRlbyI6eyJyb29tIjoibXlyb29tIiwicm9vbUpvaW4iOnRydWV9fQ.GJ_eady6d5nqXiMEog-nN7DSl87uxMh9nLC0Xv7EryA'
 const token2 = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MzMzMTAyMTYsImlzcyI6ImRldmtleSIsIm5iZiI6MTczMzMwNjYxNiwic3ViIjoicGFydGljaXBhbnRJZGVudGl0eTIiLCJ2aWRlbyI6eyJyb29tIjoibXlyb29tIiwicm9vbUpvaW4iOnRydWV9fQ._gGzcdLA4BysCvRMfiwrQ1kF9jHHwHTfKYhu3DHNRSI'
 
 
@@ -34,7 +34,7 @@ async function connection() {
     .on(RoomEvent.TrackSubscribed, handleTrackSubscribed)
   //   .on(RoomEvent.ActiveSpeakersChanged, handleActiveSpeakerChange)
   //   .on(RoomEvent.LocalTrackUnpublished, handleLocalTrackUnpublished);
-  await room.connect('ws://localhost:7880', token);
+  await room.connect('ws://localhost:7880', token,);
   console.log('connected to room', room.activeSpeakers);
   await room.localParticipant.setMicrophoneEnabled(true);
 

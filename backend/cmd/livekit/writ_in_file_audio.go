@@ -7,14 +7,12 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
-	hropus "github.com/hraban/opus"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/livekit/server-sdk-go/v2/pkg/samplebuilder"
 	"github.com/pion/webrtc/v4"
-	"github.com/pion/webrtc/v4/pkg/media"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/grpclog"
+	"gopkg.in/hraban/opus.v2"
 	"io"
 	"log"
 	"os"
@@ -24,7 +22,7 @@ import (
 )
 
 const (
-	sampleRate = 48000 // Частота дискретизации для SpeechKit
+	sampleRate = 48000 // Частота дискретизации для SpeechKiн
 	channels   = 1     // Моно
 	frameSize  = 960   // Количество сэмплов на кадр (20ms при 48kHz)
 )
@@ -43,7 +41,7 @@ func (t *tokenAuth) RequireTransportSecurity() bool {
 	return false
 }
 
-var chunkCh = make(chan []byte, 2)
+var chunkCh = make(chan []byte)
 
 func main() {
 	apiKey := "devkey"
@@ -67,7 +65,8 @@ func main() {
 		panic(err)
 	}
 
-	go recognize()
+	//go recognize()
+	go inFile()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT)
@@ -76,59 +75,71 @@ func main() {
 	room.Disconnect()
 }
 
-type TrackWriter struct {
-	sb     *samplebuilder.SampleBuilder
-	writer media.Writer
-	track  *webrtc.TrackRemote
-}
-
 func onTrackSubscribed(track *webrtc.TrackRemote, publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 	acamulatedData := make([]byte, 1)
 	for {
-		opusData := make([]byte, 960*2) // Буфер для Opus-фреймов
-		n, _, err := track.Read(opusData)
+		pkt, _, err := track.ReadRTP()
+		fmt.Println(pkt)
 		if err != nil {
-			log.Println("Ошибка чтения аудиоданных:", err)
-			return
+			fmt.Println("Ошибка чтения данных из трека", err)
 		}
-		pcmBytes := opusToPCM(opusData[:n])
-		acamulatedData = append(acamulatedData, pcmBytes...)
+		pcm, err := getAudioRawBuffer(pkt.Payload)
+		if err != nil {
+			fmt.Println("Ошибка декодирования", err)
+		}
+		acamulatedData = append(acamulatedData, pcm...)
 		if len(acamulatedData) >= 4096 {
-			fmt.Println(acamulatedData)
-			chunkCh <- acamulatedData
+			if err != nil {
+				fmt.Println("Ошибка декодирования", err)
+			}
+			chunkCh <- pcm
 			acamulatedData = make([]byte, 1)
 		}
 	}
 }
 
-func opusToPCM(in []byte) []byte {
-	decoder, err := hropus.NewDecoder(48000, 1)
+func getAudioRawBuffer(fileBody []byte) ([]byte, error) {
+	channels := 2
+	s, err := opus.NewStream(bytes.NewReader(fileBody))
 	if err != nil {
-		fmt.Println("Ошибка при создании декодера", err)
+		return nil, err
 	}
-	pcmBytes := make([]int16, 960*2)
-	n, err := decoder.Decode(in, pcmBytes)
-	if err != nil {
-		fmt.Println("Ошибка при декодировании", err)
+	defer s.Close()
+	audioRawBuffer := new(bytes.Buffer)
+	pcmbuf := make([]int16, 16384)
+	for {
+		n, err := s.Read(pcmbuf)
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return nil, err
+		}
+		pcm := pcmbuf[:n*channels]
+		err = binary.Write(audioRawBuffer, binary.LittleEndian, pcm)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return pcmToBytes(pcmBytes[:n])
+	return audioRawBuffer.Bytes(), nil
 }
 
-func pcmToBytes(pcmData []int16) []byte {
-	// Создаем новый буфер для байтового массива
-	buf := new(bytes.Buffer)
+func inFile() {
+	// Открытие или создание файла для записи
+	file, err := os.Create("output.pcm")
+	if err != nil {
+		fmt.Println("Ошибка при создании файла:", err)
+		return
+	}
+	defer file.Close()
 
-	// Преобразуем каждый int16 в 2 байта и записываем в буфер
-	for _, sample := range pcmData {
-		// Записываем каждый int16 как два байта в Little Endian
-		err := binary.Write(buf, binary.LittleEndian, sample)
+	for ch := range chunkCh {
+		_, err := file.Write(ch)
 		if err != nil {
-			fmt.Println("Ошибка при записи в буфер:", err)
+			fmt.Println("Ошибка записи в файл", err)
 		}
 	}
 
-	// Возвращаем байтовый массив
-	return buf.Bytes()
+	fmt.Println("Данные записаны в файл успешно!")
 }
 
 func recognize() {
@@ -138,8 +149,8 @@ func recognize() {
 				AudioFormat: &stt.AudioFormatOptions_RawAudio{
 					RawAudio: &stt.RawAudio{
 						AudioEncoding:     stt.RawAudio_LINEAR16_PCM,
-						SampleRateHertz:   sampleRate,
-						AudioChannelCount: 1,
+						SampleRateHertz:   44100,
+						AudioChannelCount: 2,
 					},
 				},
 			},
@@ -209,6 +220,8 @@ func recognize() {
 			log.Fatalf("Ошибка получения ответа: %v", err)
 		}
 
-		fmt.Println("Результат распознавания:", resp.GetSpeakerAnalysis())
+		if resp.GetPartial() != nil {
+			fmt.Println("Результат распознавания:", resp.GetPartial().Alternatives)
+		}
 	}
 }
