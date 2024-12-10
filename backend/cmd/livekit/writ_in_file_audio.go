@@ -171,7 +171,7 @@ func recognize() {
 	grpcConn, err := grpc.NewClient(
 		"stt.api.cloud.yandex.net:443",
 		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})),
-		grpc.WithPerRPCCredentials(&tokenAuth{"Api-Key AQVN3YdhnRO9_90yFRj8f4Mr_WTXcXhjWaSITTE5"}),
+		grpc.WithPerRPCCredentials(&tokenAuth{"Api-Key "}),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(4*1024*1025)),
 	)
 	defer grpcConn.Close()
