@@ -1,43 +1,34 @@
 <script setup>
 import {
-  LocalParticipant,
-  LocalTrackPublication,
-  Participant,
-  RemoteParticipant,
-  RemoteTrack,
-  RemoteTrackPublication,
   Room,
   RoomEvent,
   Track,
-  VideoPresets,
 } from 'livekit-client';
 import {ref} from "vue";
 
-const room = new Room()
-
-const model = ref('1')
-const token1 = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MzM3ODE3MTcsImlzcyI6ImRldmtleSIsIm5iZiI6MTczMzc3ODExNywic3ViIjoicGFydGljaXBhbnRJZGVudGl0eTEiLCJ2aWRlbyI6eyJyb29tIjoibXlyb29tIiwicm9vbUpvaW4iOnRydWV9fQ.GJ_eady6d5nqXiMEog-nN7DSl87uxMh9nLC0Xv7EryA'
-const token2 = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MzMzMTAyMTYsImlzcyI6ImRldmtleSIsIm5iZiI6MTczMzMwNjYxNiwic3ViIjoicGFydGljaXBhbnRJZGVudGl0eTIiLCJ2aWRlbyI6eyJyb29tIjoibXlyb29tIiwicm9vbUpvaW4iOnRydWV9fQ._gGzcdLA4BysCvRMfiwrQ1kF9jHHwHTfKYhu3DHNRSI'
+const result = ref('')
+const token1 = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MzQyNzQ2MzUsImlzcyI6ImRldmtleSIsIm5iZiI6MTczNDE4ODIzNSwic3ViIjoiaXZhbiIsInZpZGVvIjp7InJvb20iOiJteXJvb20iLCJyb29tSm9pbiI6dHJ1ZX19.nmcYBXN4SirzweF717I-XFUaBbO0w21aYcyJtxGfC2M'
 
 
-async function connection() {
+async function connectionRTC() {
   const room = new Room()
-  let token = ''
-  if (model.value === '1') {
-    token = token1
-  } else {
-    token = token2
-  }
+  let token = token1
 
   await room.prepareConnection('http://localhost:7880', token);
   room
     .on(RoomEvent.TrackSubscribed, handleTrackSubscribed)
-  //   .on(RoomEvent.ActiveSpeakersChanged, handleActiveSpeakerChange)
-  //   .on(RoomEvent.LocalTrackUnpublished, handleLocalTrackUnpublished);
-  await room.connect('ws://localhost:7880', token,);
+  await room.connect('ws://localhost:7880', token);
   console.log('connected to room', room.activeSpeakers);
-  await room.localParticipant.setMicrophoneEnabled(true);
-
+  navigator.mediaDevices.getUserMedia({
+    audio: {
+      sampleRate: 48000
+    }
+  }).then((stream) => {
+    const audioTrack = stream.getAudioTracks()[0];
+    room.localParticipant.publishTrack(audioTrack);
+  }).catch((error) => {
+    console.error("Ошибка при доступе к микрофону:", error);
+  });
 }
 
 function handleTrackSubscribed(
@@ -56,12 +47,47 @@ function attachTrack(track, participant) {
   track.attach(v);
 }
 
+console.log("Starting connection to WS")
+let connectionEn = new WebSocket("ws://localhost:8088/en")
+
+connectionEn.onerror = function(event) {
+  console.log(event)
+}
+
+connectionEn.onopen = function(event) {
+  console.log(event)
+  console.log("Successfully connected to the echo WebSocket Server")
+}
+
+connectionEn.onmessage = function(event) {
+  console.log(event.data)
+  result.value = event.data
+}
 </script>
 
 <template>
-<input type="text" v-model="model">
-<button @click="connection">Подключиться</button>
-  <audio id="remoteAudio"></audio>
+  <div class="flex flex-col h-screen">
+    <!-- Header -->
+    <header class="bg-green-600 text-white p-4 flex justify-between items-center">
+      <div class="text-2xl font-semibold">Перевод в реальном времени</div>
+      <div class="text-lg">Красиков Иван</div>
+    </header>
+
+    <!-- Main Content -->
+    <div class="flex flex-col flex-1">
+      <!-- Subtitles Section -->
+      <div class="flex-1 flex items-center justify-center p-6 flex-col gap-1">
+        <div class="bg-gray-800 text-white text-xl p-6 rounded-lg shadow-md w-full max-w-3xl">
+          <p v-if="result" class="whitespace-pre-wrap">{{ result }}</p>
+          <p v-else class="text-center text-gray-400">Место для субтитров</p>
+        </div>
+        <!-- Button under subtitles -->
+        <button @click="connectionRTC" class="mt-4 px-6 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+          Подключиться
+        </button>
+      </div>
+    </div>
+  </div>
 </template>
 
 <style scoped>
